@@ -1,7 +1,7 @@
 [general]
 name=QFieldCloud Change Inspector
-version=0.1.3
-description=Deltas QFieldCloud en lecture seule avec détection du projet ouvert et pagination complète.
+version=0.2.0
+description=Inspection des deltas, validation contrôlée des PATCH et restauration locale protégée.
 author=Dominic Martin
 qfield_version=4.0
 icon=icon.svg

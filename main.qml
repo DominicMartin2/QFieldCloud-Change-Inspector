@@ -21,13 +21,19 @@ Item {
     property int notAppliedCount: 0
     property int appliedCount: 0
     property int loadedPages: 0
-    property int maxChanges: 5000
+    property int maxChanges: 50000
     property bool loadingProjects: false
     property string projectLookupMessage: ""
     property string serverUrl: "https://app.qfield.cloud/api/v1/"
     property string projectId: ""
     property string projectLabel: ""
     property int pageSize: 200
+    property var selectedDelta: null
+    property var patchTargetLayer: null
+    property var patchTargetFeature: null
+    property var patchRows: []
+    property var lastAppliedPatch: null
+    property string patchMessage: ""
 
     function normalizedServerUrl(value) {
         var url = String(value || "").trim()
@@ -159,10 +165,15 @@ Item {
         changeModel.clear()
         var wantedStatus = selectedStatusCode()
         var needle = searchField ? String(searchField.text || "").toLowerCase().trim() : ""
+        var fromText = fromDateField ? String(fromDateField.text || "").trim() : ""
+        var toText = toDateField ? String(toDateField.text || "").trim() : ""
 
         for (var i = 0; i < allChanges.length; ++i) {
             var item = allChanges[i]
             var status = changeStatus(item)
+            var day = String(item.created_at || "").slice(0, 10)
+            if (fromText && day && day < fromText) continue
+            if (toText && day && day > toText) continue
             if (wantedStatus && status !== wantedStatus &&
                     !(wantedStatus === "STATUS_ERROR" && status === "STATUS_UNPERMITTED"))
                 continue
@@ -188,6 +199,188 @@ Item {
                 "rawJson": JSON.stringify(item, null, 2)
             })
         }
+    }
+
+    function qgisLayerName(layer) {
+        if (!layer) return ""
+        try { return String(typeof layer.name === "function" ? layer.name() : layer.name) }
+        catch (e) { return "" }
+    }
+
+    function sameValue(a, b) {
+        if ((a === null || a === undefined) && (b === null || b === undefined)) return true
+        if (a === null || a === undefined || b === null || b === undefined) return false
+        if (typeof a === "object" || typeof b === "object") {
+            try { return JSON.stringify(a) === JSON.stringify(b) } catch (e) {}
+        }
+        return String(a) === String(b)
+    }
+
+    function findLayerForDelta(item) {
+        var c = changeContent(item)
+        var names = [String(c.localLayerName || ""), String(c.sourceLayerName || "")]
+        var matches = []
+        try {
+            var layers = ProjectUtils.mapLayers(qgisProject)
+            for (var key in layers) {
+                var n = qgisLayerName(layers[key])
+                for (var i = 0; i < names.length; ++i)
+                    if (names[i] && n === names[i]) { matches.push(layers[key]); break }
+            }
+        } catch (e) { patchMessage = qsTr("Lecture des couches impossible : %1").arg(String(e)) }
+        return matches.length === 1 ? matches[0] : null
+    }
+
+    function candidateIdentifiers(item) {
+        var c = changeContent(item)
+        var oldA = c.old && c.old.attributes ? c.old.attributes : ({})
+        var newA = c.new && c.new.attributes ? c.new.attributes : ({})
+        var preferred = ["id_unique_inv", "uuid", "guid"]
+        var out = []
+        for (var i = 0; i < preferred.length; ++i) {
+            var k = preferred[i]
+            var v = newA[k] !== undefined ? newA[k] : oldA[k]
+            if (v !== undefined && v !== null && String(v).length > 0)
+                out.push({ "field": k, "value": v })
+        }
+        return out
+    }
+
+    function locateFeature(item, layer) {
+        var ids = candidateIdentifiers(item)
+        var matches = []
+        var matchKey = ""
+        try {
+            var iterator = LayerUtils.createFeatureIterator(layer)
+            while (iterator && iterator.hasNext()) {
+                var f = iterator.next()
+                var matched = false
+                for (var i = 0; i < ids.length; ++i) {
+                    var current
+                    try { current = f.attribute(ids[i].field) } catch (e1) { current = undefined }
+                    if (current !== undefined && sameValue(current, ids[i].value)) {
+                        matched = true; matchKey = ids[i].field; break
+                    }
+                }
+                if (!matched && ids.length === 0) {
+                    var c = changeContent(item)
+                    if (sameValue(f.id, c.localPk) || sameValue(f.id, c.sourcePk)) {
+                        matched = true; matchKey = "__feature_id__"
+                    }
+                }
+                if (matched) matches.push(f)
+            }
+        } catch (e2) { patchMessage = qsTr("Recherche de l’entité impossible : %1").arg(String(e2)) }
+        return matches.length === 1 ? { "feature": matches[0], "key": matchKey } : null
+    }
+
+    function preparePatch(rawJson) {
+        patchMessage = ""
+        var item
+        try { item = JSON.parse(rawJson) } catch (e) { patchMessage = qsTr("Delta illisible."); return }
+        var c = changeContent(item)
+        if (String(c.method || "").toLowerCase() !== "patch") {
+            patchMessage = qsTr("La v0.2.0 applique uniquement les opérations PATCH.")
+            patchErrorDialog.open(); return
+        }
+        var layer = findLayerForDelta(item)
+        if (!layer) {
+            patchMessage = qsTr("Couche introuvable ou correspondance ambiguë : %1").arg(layerName(item))
+            patchErrorDialog.open(); return
+        }
+        var located = locateFeature(item, layer)
+        if (!located) {
+            patchMessage = qsTr("Entité introuvable de façon unique. Aucune écriture n’est autorisée.")
+            patchErrorDialog.open(); return
+        }
+        var oldA = c.old && c.old.attributes ? c.old.attributes : ({})
+        var newA = c.new && c.new.attributes ? c.new.attributes : ({})
+        var rows = []
+        for (var field in newA) {
+            if (!(field in oldA) || !sameValue(oldA[field], newA[field])) {
+                var current
+                try { current = located.feature.attribute(field) } catch (e3) { current = undefined }
+                var blocked = field === located.key || field === "fid" || current === undefined
+                rows.push({ "field": field, "oldValue": oldA[field], "newValue": newA[field],
+                            "currentValue": current, "blocked": blocked })
+            }
+        }
+        if (rows.length === 0) {
+            patchMessage = qsTr("Ce PATCH ne contient aucun attribut modifié exploitable.")
+            patchErrorDialog.open(); return
+        }
+        var writableCount = 0
+        for (var w = 0; w < rows.length; ++w)
+            if (!rows[w].blocked) writableCount++
+        if (writableCount === 0) {
+            patchMessage = qsTr("Tous les champs modifiés sont protégés ou absents de l’entité locale.")
+            patchErrorDialog.open(); return
+        }
+        selectedDelta = item
+        patchTargetLayer = layer
+        patchTargetFeature = located.feature
+        patchRows = rows
+        var lines = [qsTr("Couche : %1").arg(qgisLayerName(layer)),
+                     qsTr("Entité : %1").arg(entityId(item)), ""]
+        for (var r = 0; r < rows.length; ++r) {
+            var x = rows[r]
+            lines.push((x.blocked ? "🔒 " : "") + x.field)
+            lines.push("  " + qsTr("ancienne : ") + readable(x.oldValue))
+            lines.push("  " + qsTr("demandée : ") + readable(x.newValue))
+            lines.push("  " + qsTr("actuelle : ") + readable(x.currentValue))
+        }
+        patchComparison.text = lines.join("\n")
+        patchReviewDialog.open()
+    }
+
+    function writePatchValues(useOldValues, operation) {
+        if (!patchTargetLayer || !patchTargetFeature) return false
+        patchSaveModel.currentLayer = patchTargetLayer
+        patchSaveModel.feature = patchTargetFeature
+        var edited = patchSaveModel.feature
+        for (var i = 0; i < patchRows.length; ++i) {
+            var row = patchRows[i]
+            if (row.blocked) continue
+            if (useOldValues && !sameValue(edited.attribute(row.field), row.newValue)) {
+                patchMessage = qsTr("Restauration bloquée : le champ « %1 » a changé depuis l’application.").arg(row.field)
+                patchErrorDialog.open(); return false
+            }
+            var value = useOldValues ? row.oldValue : row.newValue
+            if (!edited.setAttribute(row.field, value)) {
+                patchMessage = qsTr("Écriture refusée pour le champ « %1 ».").arg(row.field)
+                patchErrorDialog.open(); return false
+            }
+        }
+        if (!patchSaveModel.updateAttributesFromFeature(edited) || !patchSaveModel.save(true)) {
+            patchMessage = qsTr("QField n’a pas pu enregistrer la modification locale.")
+            patchErrorDialog.open(); return false
+        }
+        patchTargetFeature = edited
+        if (operation === "apply") {
+            lastAppliedPatch = { "delta": selectedDelta, "layer": patchTargetLayer,
+                                 "feature": edited, "rows": patchRows }
+            patchMessage = qsTr("Modification appliquée localement. Synchronisez QField pour créer un nouveau delta.")
+        } else {
+            lastAppliedPatch = null
+            patchMessage = qsTr("Valeurs antérieures restaurées localement.")
+        }
+        patchReviewDialog.close()
+        patchResultDialog.open()
+        return true
+    }
+
+    function restoreLastPatch() {
+        if (!lastAppliedPatch) return
+        selectedDelta = lastAppliedPatch.delta
+        patchTargetLayer = lastAppliedPatch.layer
+        patchRows = lastAppliedPatch.rows
+        var fresh = locateFeature(selectedDelta, patchTargetLayer)
+        if (!fresh) {
+            patchMessage = qsTr("Restauration impossible : l’entité n’est plus retrouvée de façon unique.")
+            patchErrorDialog.open(); return
+        }
+        patchTargetFeature = fresh.feature
+        restoreConfirmDialog.open()
     }
 
     function extractResults(payload) {
@@ -439,11 +632,18 @@ Item {
 
     Component.onCompleted: {
         iface.addItemToPluginsToolbar(pluginButton)
-        console.log("QFieldCloud Change Inspector v0.1.3 chargé")
+        console.log("QFieldCloud Change Inspector v0.2.0 chargé")
     }
 
     ListModel { id: changeModel }
     ListModel { id: projectModel }
+
+    FeatureModel {
+        id: patchSaveModel
+        project: qgisProject
+        currentLayer: plugin.patchTargetLayer
+        modelMode: FeatureModel.SingleFeatureModel
+    }
 
     QfToolButton {
         id: pluginButton
@@ -458,7 +658,7 @@ Item {
         id: inspectorDialog
         parent: mainWindow.contentItem
         modal: true
-        title: qsTr("Deltas QFieldCloud — lecture seule")
+        title: qsTr("Deltas QFieldCloud — validation contrôlée")
         standardButtons: Dialog.Close
         width: parent ? Math.max(900, parent.width * 0.94) : 1300
         height: parent ? Math.max(650, parent.height * 0.92) : 850
@@ -508,6 +708,17 @@ Item {
                 Label { text: qsTr("%1 affiché(s)").arg(changeModel.count) }
             }
 
+            RowLayout {
+                Layout.fillWidth: true
+                Label { text: qsTr("Du") }
+                TextField { id: fromDateField; placeholderText: "AAAA-MM-JJ"; onTextChanged: dateTimer.restart() }
+                Label { text: qsTr("au") }
+                TextField { id: toDateField; placeholderText: "AAAA-MM-JJ"; onTextChanged: dateTimer.restart() }
+                Button { text: qsTr("Effacer les dates"); onClicked: { fromDateField.text = ""; toDateField.text = "" } }
+                Item { Layout.fillWidth: true }
+                Button { text: qsTr("Restaurer la dernière application"); enabled: plugin.lastAppliedPatch !== null; onClicked: plugin.restoreLastPatch() }
+            }
+
             ListView {
                 id: changesList
                 Layout.fillWidth: true
@@ -551,6 +762,11 @@ Item {
                                     detailText.text = rawJson
                                     detailDialog.open()
                                 }
+                            }
+                            Button {
+                                text: qsTr("Valider…")
+                                visible: methodText === "PATCH" && (statusCode === "STATUS_ERROR" || statusCode === "STATUS_CONFLICT" || statusCode === "STATUS_NOT_APPLIED")
+                                onClicked: plugin.preparePatch(rawJson)
                             }
                         }
                         Label {
@@ -629,7 +845,7 @@ Item {
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
                 opacity: 0.72
-                text: qsTr("Le jeton est utilisé uniquement pour des requêtes GET et reste en mémoire jusqu'à la fermeture de QField. Il n'est jamais ajouté au projet synchronisé.")
+                text: qsTr("Le jeton sert uniquement à lire QFieldCloud et reste en mémoire jusqu'à la fermeture de QField. Les changements validés sont écrits dans le projet local, puis envoyés comme nouveaux deltas lors de la synchronisation.")
             }
             RowLayout {
                 Layout.fillWidth: true
@@ -638,6 +854,77 @@ Item {
                 Button { text: qsTr("Enregistrer et actualiser"); font.bold: true; onClicked: plugin.saveConfiguration() }
             }
         }
+    }
+
+    Dialog {
+        id: patchReviewDialog
+        parent: mainWindow.contentItem
+        modal: true
+        title: qsTr("Vérifier le PATCH avant application")
+        standardButtons: Dialog.NoButton
+        width: Math.min(parent.width * 0.9, 900)
+        height: Math.min(parent.height * 0.85, 720)
+        x: (parent.width - width) / 2
+        y: (parent.height - height) / 2
+        contentItem: ColumnLayout {
+            Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; text: qsTr("Les champs marqués 🔒 sont des identifiants ou sont absents de l’entité locale; ils ne seront pas écrits.") }
+            ScrollView { Layout.fillWidth: true; Layout.fillHeight: true
+                TextArea { id: patchComparison; readOnly: true; wrapMode: TextEdit.Wrap; font.family: "monospace"; selectByMouse: true }
+            }
+            CheckBox { id: validationCheck; text: qsTr("J’ai vérifié les valeurs demandées et j’autorise cette modification locale.") }
+            RowLayout { Layout.fillWidth: true; Item { Layout.fillWidth: true }
+                Button { text: qsTr("Annuler"); onClicked: { validationCheck.checked = false; patchReviewDialog.close() } }
+                Button { text: qsTr("Appliquer"); font.bold: true; enabled: validationCheck.checked; onClicked: { validationCheck.checked = false; applyConfirmDialog.open() } }
+            }
+        }
+    }
+
+    Dialog {
+        id: applyConfirmDialog
+        parent: mainWindow.contentItem
+        modal: true
+        title: qsTr("Confirmation finale")
+        standardButtons: Dialog.NoButton
+        contentItem: ColumnLayout {
+            Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; text: qsTr("Appliquer maintenant ce PATCH à l’entité locale ? Cette action sera synchronisée comme un nouveau delta.") }
+            RowLayout { Layout.fillWidth: true; Item { Layout.fillWidth: true }
+                Button { text: qsTr("Non"); onClicked: applyConfirmDialog.close() }
+                Button { text: qsTr("Oui, appliquer"); font.bold: true; onClicked: { applyConfirmDialog.close(); plugin.writePatchValues(false, "apply") } }
+            }
+        }
+    }
+
+    Dialog {
+        id: restoreConfirmDialog
+        parent: mainWindow.contentItem
+        modal: true
+        title: qsTr("Restaurer les valeurs antérieures")
+        standardButtons: Dialog.NoButton
+        contentItem: ColumnLayout {
+            Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; text: qsTr("La restauration sera refusée si une valeur actuelle ne correspond plus à la valeur appliquée.") }
+            RowLayout { Layout.fillWidth: true; Item { Layout.fillWidth: true }
+                Button { text: qsTr("Annuler"); onClicked: restoreConfirmDialog.close() }
+                Button { text: qsTr("Restaurer"); font.bold: true; onClicked: { restoreConfirmDialog.close(); plugin.writePatchValues(true, "restore") } }
+            }
+        }
+    }
+
+    Dialog {
+        id: patchResultDialog
+        parent: mainWindow.contentItem
+        modal: true
+        title: qsTr("Modification locale")
+        standardButtons: Dialog.Close
+        contentItem: Label { width: 520; wrapMode: Text.WordWrap; text: plugin.patchMessage }
+    }
+
+    Dialog {
+        id: patchErrorDialog
+        parent: mainWindow.contentItem
+        modal: true
+        title: qsTr("Modification impossible")
+        standardButtons: Dialog.Close
+        contentItem: Label { width: 520; wrapMode: Text.WordWrap; text: plugin.patchMessage }
     }
 
     Dialog {
@@ -672,4 +959,5 @@ Item {
         repeat: false
         onTriggered: plugin.rebuildDisplay()
     }
+    Timer { id: dateTimer; interval: 250; repeat: false; onTriggered: plugin.rebuildDisplay() }
 }
