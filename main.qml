@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Qt.labs.settings
 
 import org.qfield
 import Theme
@@ -24,15 +23,8 @@ Item {
     property int maxChanges: 5000
     property bool loadingProjects: false
     property string projectLookupMessage: ""
-
-    Settings {
-        id: localSettings
-        category: "QFieldCloudChangeInspector"
-        property string serverUrl: "https://app.qfield.cloud/api/v1/"
-        property string projectId: ""
-        property string savedToken: ""
-        property bool rememberToken: false
-    }
+    property string serverUrl: "https://app.qfield.cloud/api/v1/"
+    property string projectId: ""
 
     function normalizedServerUrl(value) {
         var url = String(value || "").trim()
@@ -44,9 +36,7 @@ Item {
     }
 
     function activeToken() {
-        if (sessionToken.length > 0)
-            return sessionToken
-        return localSettings.rememberToken ? localSettings.savedToken : ""
+        return sessionToken
     }
 
     function readable(value) {
@@ -323,8 +313,8 @@ Item {
     }
 
     function refreshChanges() {
-        var projectId = String(localSettings.projectId || "").trim()
-        if (!projectId || !activeToken()) {
+        var activeProjectId = String(plugin.projectId || "").trim()
+        if (!activeProjectId || !activeToken()) {
             configDialog.open()
             message = qsTr("Renseignez l'identifiant du projet et le jeton.")
             return
@@ -335,35 +325,31 @@ Item {
         loadedPages = 0
         allChanges = []
         changeModel.clear()
-        var url = normalizedServerUrl(localSettings.serverUrl) +
-                  "deltas/" + encodeURIComponent(projectId) +
+        var url = normalizedServerUrl(plugin.serverUrl) +
+                  "deltas/" + encodeURIComponent(activeProjectId) +
                   "/?limit=200&offset=0&ordering=-created_at"
         requestPage(url, [])
     }
 
     function saveConfiguration() {
-        localSettings.serverUrl = normalizedServerUrl(serverField.text)
-        localSettings.projectId = String(projectField.text || "").trim()
+        plugin.serverUrl = normalizedServerUrl(serverField.text)
+        plugin.projectId = String(projectField.text || "").trim()
         sessionToken = String(tokenField.text || "").trim()
-        localSettings.rememberToken = rememberCheck.checked
-        localSettings.savedToken = rememberCheck.checked ? sessionToken : ""
         configDialog.close()
         refreshChanges()
     }
 
     function openInspector() {
         inspectorDialog.open()
-        if (allChanges.length === 0 && activeToken() && localSettings.projectId)
+        if (allChanges.length === 0 && activeToken() && plugin.projectId)
             refreshChanges()
-        else if (!activeToken() || !localSettings.projectId)
+        else if (!activeToken() || !plugin.projectId)
             configDialog.open()
     }
 
     Component.onCompleted: {
-        if (localSettings.rememberToken)
-            sessionToken = localSettings.savedToken
         iface.addItemToPluginsToolbar(pluginButton)
-        console.log("QFieldCloud Change Inspector v0.1.1 chargé")
+        console.log("QFieldCloud Change Inspector v0.1.2 chargé")
     }
 
     ListModel { id: changeModel }
@@ -508,7 +494,7 @@ Item {
         contentItem: ColumnLayout {
             spacing: 10
             Label { text: qsTr("Serveur API"); font.bold: true }
-            TextField { id: serverField; Layout.fillWidth: true; text: localSettings.serverUrl }
+            TextField { id: serverField; Layout.fillWidth: true; text: plugin.serverUrl }
             Label { text: qsTr("Jeton API"); font.bold: true }
             TextField {
                 id: tokenField
@@ -519,12 +505,11 @@ Item {
             }
             RowLayout {
                 CheckBox { id: showTokenCheck; text: qsTr("Afficher le jeton") }
-                CheckBox { id: rememberCheck; text: qsTr("Mémoriser sur cet appareil"); checked: localSettings.rememberToken }
             }
             Label { text: qsTr("Identifiant UUID du projet QFieldCloud"); font.bold: true }
             RowLayout {
                 Layout.fillWidth: true
-                TextField { id: projectField; Layout.fillWidth: true; text: localSettings.projectId; placeholderText: qsTr("Rempli automatiquement après sélection") }
+                TextField { id: projectField; Layout.fillWidth: true; text: plugin.projectId; placeholderText: qsTr("Rempli automatiquement après sélection") }
                 Button {
                     text: plugin.loadingProjects ? qsTr("Recherche…") : qsTr("Trouver mes projets")
                     enabled: !plugin.loadingProjects
@@ -553,7 +538,7 @@ Item {
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
                 opacity: 0.72
-                text: qsTr("Le jeton est utilisé uniquement pour des requêtes GET. S'il est mémorisé, il reste dans les paramètres locaux de QField et n'est pas ajouté au projet synchronisé.")
+                text: qsTr("Le jeton est utilisé uniquement pour des requêtes GET et reste en mémoire jusqu'à la fermeture de QField. Il n'est jamais ajouté au projet synchronisé.")
             }
             RowLayout {
                 Layout.fillWidth: true
