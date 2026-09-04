@@ -1,0 +1,7 @@
+[general]
+name=QFieldCloud Change Inspector
+version=0.1.1
+description=Consultation en lecture seule des deltas avec sélection automatique du projet QFieldCloud.
+author=Dominic Martin
+qfield_version=4.0
+icon=icon.svg
