@@ -1,7 +1,7 @@
 [general]
 name=QFieldCloud Change Inspector
-version=0.1.2
-description=Consultation en lecture seule des deltas, compatible avec QField 4 sans Qt.labs.settings.
+version=0.1.3
+description=Deltas QFieldCloud en lecture seule avec détection du projet ouvert et pagination complète.
 author=Dominic Martin
 qfield_version=4.0
 icon=icon.svg

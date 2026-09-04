@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 
 import org.qfield
+import org.qgis
 import Theme
 
 Item {
@@ -25,6 +26,8 @@ Item {
     property string projectLookupMessage: ""
     property string serverUrl: "https://app.qfield.cloud/api/v1/"
     property string projectId: ""
+    property string projectLabel: ""
+    property int pageSize: 200
 
     function normalizedServerUrl(value) {
         var url = String(value || "").trim()
@@ -201,7 +204,9 @@ Item {
         return ""
     }
 
-    function requestPage(url, accumulated) {
+    function requestPage(baseUrl, offset, accumulated) {
+        var url = baseUrl + "?limit=" + pageSize + "&offset=" + offset +
+                  "&ordering=-created_at"
         var xhr = new XMLHttpRequest()
         xhr.open("GET", url)
         xhr.setRequestHeader("Authorization", "Token " + activeToken())
@@ -229,9 +234,8 @@ Item {
                 accumulated.push(rows[i])
             loadedPages++
 
-            var next = nextUrl(payload)
-            if (next && accumulated.length < maxChanges) {
-                requestPage(next, accumulated)
+            if (rows.length === pageSize && accumulated.length < maxChanges) {
+                requestPage(baseUrl, offset + rows.length, accumulated)
                 return
             }
 
@@ -239,13 +243,101 @@ Item {
             loading = false
             resetCounts()
             rebuildDisplay()
-            message = qsTr("%1 changement(s) récupéré(s).").arg(totalCount)
+            message = accumulated.length >= maxChanges
+                    ? qsTr("%1 changement(s) récupéré(s) — limite atteinte.").arg(totalCount)
+                    : qsTr("%1 changement(s) récupéré(s).").arg(totalCount)
         }
         xhr.onerror = function() {
             loading = false
             message = qsTr("Connexion impossible au serveur QFieldCloud.")
         }
         xhr.send()
+    }
+
+    function normalizedProjectName(value) {
+        return String(value || "")
+                .toLowerCase()
+                .replace(/[àáâäãå]/g, "a")
+                .replace(/[ç]/g, "c")
+                .replace(/[èéêë]/g, "e")
+                .replace(/[ìíîï]/g, "i")
+                .replace(/[ñ]/g, "n")
+                .replace(/[òóôöõ]/g, "o")
+                .replace(/[ùúûü]/g, "u")
+                .replace(/[ýÿ]/g, "y")
+                .replace(/\.(qgs|qgz)$/i, "")
+                .replace(/[^a-z0-9]/g, "")
+    }
+
+    function currentProjectHints() {
+        var hints = []
+        try {
+            var path = typeof qgisProject.fileName === "function"
+                    ? qgisProject.fileName() : qgisProject.fileName
+            path = String(path || "")
+            if (path) {
+                hints.push(path)
+                var bits = path.replace(/\\/g, "/").split("/")
+                if (bits.length > 0) hints.push(bits[bits.length - 1])
+                if (bits.length > 1) hints.push(bits[bits.length - 2])
+            }
+        } catch (e1) {}
+        try {
+            var title = typeof qgisProject.title === "function"
+                    ? qgisProject.title() : qgisProject.title
+            if (title) hints.push(String(title))
+        } catch (e2) {}
+        return hints
+    }
+
+    function chooseProject(index, automatic) {
+        if (index < 0 || index >= projectModel.count)
+            return false
+        projectCombo.currentIndex = index
+        var chosen = projectModel.get(index)
+        projectField.text = chosen.projectId
+        plugin.projectId = chosen.projectId
+        plugin.projectLabel = chosen.label
+        if (automatic)
+            projectLookupMessage = qsTr("Projet ouvert reconnu automatiquement : %1").arg(chosen.label)
+        return true
+    }
+
+    function autoDetectCurrentProject() {
+        if (projectModel.count === 0)
+            return false
+        if (projectModel.count === 1)
+            return chooseProject(0, true)
+
+        var hints = currentProjectHints()
+        var bestIndex = -1
+        var bestScore = 0
+        var bestCount = 0
+        for (var i = 0; i < projectModel.count; ++i) {
+            var entry = projectModel.get(i)
+            var score = 0
+            for (var h = 0; h < hints.length; ++h) {
+                var rawHint = String(hints[h] || "")
+                if (rawHint.indexOf(entry.projectId) >= 0)
+                    score = Math.max(score, 120)
+                var hint = normalizedProjectName(rawHint)
+                var cloudName = normalizedProjectName(entry.cloudName)
+                if (hint && cloudName && hint === cloudName)
+                    score = Math.max(score, 100)
+                else if (hint.length >= 5 && cloudName.length >= 5 &&
+                         (hint.indexOf(cloudName) >= 0 || cloudName.indexOf(hint) >= 0))
+                    score = Math.max(score, 70)
+            }
+            if (score > bestScore) {
+                bestScore = score
+                bestIndex = i
+                bestCount = 1
+            } else if (score > 0 && score === bestScore) {
+                bestCount++
+            }
+        }
+        return bestScore >= 70 && bestCount === 1
+                ? chooseProject(bestIndex, true) : false
     }
 
     function fetchProjects() {
@@ -293,16 +385,15 @@ Item {
                 var name = String(p.name || p.title || p.id || "Projet")
                 projectModel.append({
                     "label": owner ? owner + " / " + name : name,
-                    "projectId": String(p.id || "")
+                    "projectId": String(p.id || ""),
+                    "cloudName": name
                 })
             }
 
-            projectLookupMessage = rows.length > 0
-                    ? qsTr("%1 projet(s) trouvé(s).").arg(rows.length)
-                    : qsTr("Aucun projet accessible avec ce jeton.")
-            if (projectModel.count > 0) {
-                projectCombo.currentIndex = 0
-                projectField.text = projectModel.get(0).projectId
+            if (!autoDetectCurrentProject()) {
+                projectLookupMessage = rows.length > 0
+                        ? qsTr("%1 projet(s) trouvé(s). Sélectionnez le bon projet.").arg(rows.length)
+                        : qsTr("Aucun projet accessible avec ce jeton.")
             }
         }
         xhr.onerror = function() {
@@ -326,9 +417,8 @@ Item {
         allChanges = []
         changeModel.clear()
         var url = normalizedServerUrl(plugin.serverUrl) +
-                  "deltas/" + encodeURIComponent(activeProjectId) +
-                  "/?limit=200&offset=0&ordering=-created_at"
-        requestPage(url, [])
+                  "deltas/" + encodeURIComponent(activeProjectId) + "/"
+        requestPage(url, 0, [])
     }
 
     function saveConfiguration() {
@@ -349,7 +439,7 @@ Item {
 
     Component.onCompleted: {
         iface.addItemToPluginsToolbar(pluginButton)
-        console.log("QFieldCloud Change Inspector v0.1.2 chargé")
+        console.log("QFieldCloud Change Inspector v0.1.3 chargé")
     }
 
     ListModel { id: changeModel }
@@ -388,6 +478,7 @@ Item {
                 }
                 BusyIndicator { running: plugin.loading; visible: running; implicitWidth: 34; implicitHeight: 34 }
                 Label { Layout.fillWidth: true; text: plugin.message; elide: Text.ElideRight }
+                Label { visible: plugin.projectLabel.length > 0; text: plugin.projectLabel; font.bold: true }
             }
 
             RowLayout {
@@ -524,7 +615,7 @@ Item {
                 textRole: "label"
                 onActivated: {
                     if (currentIndex >= 0 && currentIndex < projectModel.count)
-                        projectField.text = projectModel.get(currentIndex).projectId
+                        plugin.chooseProject(currentIndex, false)
                 }
             }
             Label {
