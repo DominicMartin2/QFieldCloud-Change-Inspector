@@ -4,7 +4,6 @@ import QtQuick.Layouts
 
 import org.qfield
 import org.qgis
-import QgisQuick as QgsQuick
 import Theme
 
 Item {
@@ -364,7 +363,7 @@ Item {
         try { item = JSON.parse(rawJson) } catch (e) { patchMessage = qsTr("Delta illisible."); return }
         var c = changeContent(item)
         if (String(c.method || "").toLowerCase() !== "patch") {
-            patchMessage = qsTr("La v0.3.1 applique uniquement les opérations PATCH.")
+            patchMessage = qsTr("La v0.3.2 applique uniquement les opérations PATCH.")
             patchErrorDialog.open(); return
         }
         var layer = findLayerForDelta(item)
@@ -500,25 +499,39 @@ Item {
         return isNaN(x) || isNaN(y) ? null : { "x": x, "y": y }
     }
 
+    function qgisStringLiteral(value) {
+        return "'" + String(value || "").replace(/'/g, "''") + "'"
+    }
+
     function mapPointForWkt(wkt, layer) {
         if (!wkt || !layer) return null
         try {
-            var canvas = iface.mapCanvas()
             var coordinates = pointCoordinatesFromWkt(wkt)
-            if (!coordinates || !canvas || !canvas.mapSettings) return null
+            if (!coordinates) return null
+            var canvas = iface.mapCanvas()
+            if (!canvas || !canvas.mapSettings) return null
             var sourceCrs = typeof layer.crs === "function" ? layer.crs() : layer.crs
             var destinationCrs = canvas.mapSettings.destinationCrs
             if (typeof destinationCrs === "function") destinationCrs = destinationCrs()
-            var sourcePoint = QgsQuick.Utils.pointXY(coordinates.x, coordinates.y)
-            var transformed = QgsQuick.Utils.transformPoint(
-                        sourceCrs,
-                        destinationCrs,
-                        canvas.mapSettings.transformContext(),
-                        sourcePoint)
-            return QgsQuick.Utils.point(Number(transformed.x), Number(transformed.y))
+            var sourceAuth = String(typeof sourceCrs.authid === "function" ? sourceCrs.authid() : sourceCrs.authid || "")
+            var destinationAuth = String(typeof destinationCrs.authid === "function" ? destinationCrs.authid() : destinationCrs.authid || "")
+            var geometryExpression = "geom_from_wkt(" + qgisStringLiteral(wkt) + ")"
+            if (sourceAuth && destinationAuth && sourceAuth !== destinationAuth)
+                geometryExpression = "transform(" + geometryExpression + ", " + qgisStringLiteral(sourceAuth) + ", " + qgisStringLiteral(destinationAuth) + ")"
+            coordinateEvaluator.layer = layer
+            coordinateEvaluator.expressionText = "x(" + geometryExpression + ")"
+            var rawX = coordinateEvaluator.evaluate()
+            coordinateEvaluator.expressionText = "y(" + geometryExpression + ")"
+            var rawY = coordinateEvaluator.evaluate()
+            if (rawX === null || rawX === undefined || String(rawX) === "" ||
+                    rawY === null || rawY === undefined || String(rawY) === "") return null
+            var mapX = Number(rawX)
+            var mapY = Number(rawY)
+            if (!isFinite(mapX) || !isFinite(mapY)) return null
+            return { "x": mapX, "y": mapY, "sourceCrs": sourceAuth, "mapCrs": destinationAuth }
         } catch (e) {
             patchMessage = qsTr("Conversion cartographique impossible : %1").arg(String(e))
-            console.log("QFieldCloud Change Inspector v0.3.1 geometry preview: " + e)
+            console.log("QFieldCloud Change Inspector v0.3.2 geometry preview: " + e)
             return null
         }
     }
@@ -526,9 +539,15 @@ Item {
     function updateMovementScreen() {
         if (!movementVisible) return
         try {
-            var settings = iface.mapCanvas().mapSettings
-            movementOldScreen = settings.coordinateToScreen(movementOldPoint)
-            movementNewScreen = settings.coordinateToScreen(movementNewPoint)
+            var canvas = iface.mapCanvas()
+            var extent = canvas.mapSettings.visibleExtent
+            var spanX = Number(extent.xMaximum) - Number(extent.xMinimum)
+            var spanY = Number(extent.yMaximum) - Number(extent.yMinimum)
+            if (spanX <= 0 || spanY <= 0) return
+            movementOldScreen = Qt.point((Number(movementOldPoint.x) - Number(extent.xMinimum)) / spanX * canvas.width,
+                                         (Number(extent.yMaximum) - Number(movementOldPoint.y)) / spanY * canvas.height)
+            movementNewScreen = Qt.point((Number(movementNewPoint.x) - Number(extent.xMinimum)) / spanX * canvas.width,
+                                         (Number(extent.yMaximum) - Number(movementNewPoint.y)) / spanY * canvas.height)
             movementLine.requestPaint()
         } catch (e) {}
     }
@@ -569,8 +588,11 @@ Item {
         movementVisible = true
         inspectorDialog.close()
         historyDialog.close()
-        try { iface.mapCanvas().mapSettings.setExtentFromPoints([oldPoint, newPoint], 1000, true) }
-        catch (zoomError) {}
+        try {
+            var located = locateFeature(item, layer)
+            if (located.feature)
+                iface.mapCanvas().mapSettings.extent = FeatureUtils.extent(iface.mapCanvas().mapSettings, layer, located.feature)
+        } catch (zoomError) {}
         Qt.callLater(updateMovementScreen)
     }
 
@@ -885,7 +907,7 @@ Item {
 
     Component.onCompleted: {
         iface.addItemToPluginsToolbar(pluginButton)
-        console.log("QFieldCloud Change Inspector v0.3.1 chargé")
+        console.log("QFieldCloud Change Inspector v0.3.2 chargé")
     }
 
     ListModel { id: changeModel }
@@ -897,6 +919,13 @@ Item {
         project: qgisProject
         currentLayer: plugin.patchTargetLayer
         modelMode: FeatureModel.SingleFeatureModel
+    }
+
+    ExpressionEvaluator {
+        id: coordinateEvaluator
+        project: qgisProject
+        mapSettings: iface.mapCanvas().mapSettings
+        mode: ExpressionEvaluator.ExpressionMode
     }
 
     QfToolButton {

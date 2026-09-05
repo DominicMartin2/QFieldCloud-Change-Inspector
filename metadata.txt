@@ -1,7 +1,7 @@
 [general]
 name=QFieldCloud Change Inspector
-version=0.3.1
-description=Historique des entités et aperçu corrigé des déplacements par transformation native des points.
+version=0.3.2
+description=Historique des entités et aperçu des déplacements sans dépendance QgisQuick externe.
 author=Dominic Martin
 qfield_version=4.0
 icon=icon.svg
