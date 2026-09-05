@@ -1,7 +1,7 @@
 [general]
 name=QFieldCloud Change Inspector
-version=0.3.4
-description=Validation des attributs et de la géométrie des PATCH avec restauration locale.
+version=0.3.5
+description=Application des déplacements de points PATCH avec conversion CRS compatible QField.
 author=Dominic Martin
 qfield_version=4.0
 icon=icon.svg

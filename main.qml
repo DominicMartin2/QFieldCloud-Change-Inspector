@@ -244,17 +244,6 @@ Item {
         var c = changeContent(item)
         var oldA = c.old && c.old.attributes ? c.old.attributes : ({})
         var newA = c.new && c.new.attributes ? c.new.attributes : ({})
-        var newGeometryWkt = geometryText(item, "new")
-        var geometryChanged = newGeometryWkt.length > 0 && newGeometryWkt !== geometryText(item, "old")
-        var preparedGeometry = null
-        if (geometryChanged) {
-            preparedGeometry = layerGeometryForWkt(newGeometryWkt, layer,
-                                                   String(c.localLayerCrs || c.sourceLayerCrs || ""))
-            if (!preparedGeometry) {
-                patchMessage = qsTr("La nouvelle géométrie du PATCH n’a pas pu être convertie dans le CRS de la couche. Aucune écriture n’est effectuée.")
-                patchErrorDialog.open(); return
-            }
-        }
         var preferred = ["id_unique_inv", "uuid", "guid"]
         var out = []
         for (var i = 0; i < preferred.length; ++i) {
@@ -376,7 +365,7 @@ Item {
         try { item = JSON.parse(rawJson) } catch (e) { patchMessage = qsTr("Delta illisible."); return }
         var c = changeContent(item)
         if (String(c.method || "").toLowerCase() !== "patch") {
-            patchMessage = qsTr("La v0.3.4 applique uniquement les opérations PATCH.")
+            patchMessage = qsTr("La v0.3.5 applique uniquement les opérations PATCH.")
             patchErrorDialog.open(); return
         }
         var layer = findLayerForDelta(item)
@@ -397,6 +386,18 @@ Item {
         }
         var oldA = c.old && c.old.attributes ? c.old.attributes : ({})
         var newA = c.new && c.new.attributes ? c.new.attributes : ({})
+        var newGeometryWkt = geometryText(item, "new")
+        var geometryChanged = newGeometryWkt.length > 0 && newGeometryWkt !== geometryText(item, "old")
+        var preparedGeometry = null
+        if (geometryChanged) {
+            preparedGeometry = layerGeometryForWkt(newGeometryWkt, layer,
+                                                   String(c.localLayerCrs || c.sourceLayerCrs || ""),
+                                                   located.feature)
+            if (!preparedGeometry) {
+                patchMessage = qsTr("La nouvelle géométrie du PATCH n’a pas pu être convertie dans le CRS de la couche. Aucune écriture n’est effectuée.")
+                patchErrorDialog.open(); return
+            }
+        }
         var rows = []
         for (var field in newA) {
             if (!(field in oldA) || !sameValue(oldA[field], newA[field])) {
@@ -553,7 +554,7 @@ Item {
         return "'" + String(value || "").replace(/'/g, "''") + "'"
     }
 
-    function layerGeometryForWkt(wkt, layer, sourceCrsHint) {
+    function layerGeometryForWkt(wkt, layer, sourceCrsHint, feature) {
         if (!wkt || !layer) return null
         try {
             var layerCrs = typeof layer.crs === "function" ? layer.crs() : layer.crs
@@ -563,7 +564,23 @@ Item {
             var expression = "geom_from_wkt(" + qgisStringLiteral(wkt) + ")"
             if (sourceAuth && layerAuth && sourceAuth !== layerAuth)
                 expression = "transform(" + expression + ", " + qgisStringLiteral(sourceAuth) + ", " + qgisStringLiteral(layerAuth) + ")"
+            var point = pointCoordinatesFromWkt(wkt)
+            if (point) {
+                coordinateEvaluator.layer = layer
+                coordinateEvaluator.feature = feature
+                coordinateEvaluator.expressionText = "x(" + expression + ")"
+                var rawTransformedX = coordinateEvaluator.evaluate()
+                coordinateEvaluator.expressionText = "y(" + expression + ")"
+                var rawTransformedY = coordinateEvaluator.evaluate()
+                if (rawTransformedX === null || rawTransformedX === undefined || String(rawTransformedX) === "" ||
+                        rawTransformedY === null || rawTransformedY === undefined || String(rawTransformedY) === "") return null
+                var transformedX = Number(rawTransformedX)
+                var transformedY = Number(rawTransformedY)
+                if (!isFinite(transformedX) || !isFinite(transformedY)) return null
+                expression = "make_point(" + transformedX.toString() + ", " + transformedY.toString() + ")"
+            }
             geometryEvaluator.layer = layer
+            geometryEvaluator.feature = feature
             geometryEvaluator.expressionText = expression
             return geometryEvaluator.evaluate()
         } catch (e) {
@@ -615,7 +632,7 @@ Item {
             return { "x": mapX, "y": mapY, "sourceCrs": sourceAuth, "mapCrs": destinationAuth }
         } catch (e) {
             patchMessage = qsTr("Conversion cartographique impossible : %1").arg(String(e))
-            console.log("QFieldCloud Change Inspector v0.3.4 geometry preview: " + e)
+            console.log("QFieldCloud Change Inspector v0.3.5 geometry preview: " + e)
             return null
         }
     }
@@ -1000,7 +1017,7 @@ Item {
 
     Component.onCompleted: {
         iface.addItemToPluginsToolbar(pluginButton)
-        console.log("QFieldCloud Change Inspector v0.3.4 chargé")
+        console.log("QFieldCloud Change Inspector v0.3.5 chargé")
     }
 
     ListModel { id: changeModel }
