@@ -32,6 +32,8 @@ Item {
     property var patchTargetLayer: null
     property var patchTargetFeature: null
     property var patchRows: []
+    property var patchNewGeometry: null
+    property var patchOriginalGeometry: null
     property var lastAppliedPatch: null
     property string patchMessage: ""
     property string patchMatchExplanation: ""
@@ -242,6 +244,17 @@ Item {
         var c = changeContent(item)
         var oldA = c.old && c.old.attributes ? c.old.attributes : ({})
         var newA = c.new && c.new.attributes ? c.new.attributes : ({})
+        var newGeometryWkt = geometryText(item, "new")
+        var geometryChanged = newGeometryWkt.length > 0 && newGeometryWkt !== geometryText(item, "old")
+        var preparedGeometry = null
+        if (geometryChanged) {
+            preparedGeometry = layerGeometryForWkt(newGeometryWkt, layer,
+                                                   String(c.localLayerCrs || c.sourceLayerCrs || ""))
+            if (!preparedGeometry) {
+                patchMessage = qsTr("La nouvelle géométrie du PATCH n’a pas pu être convertie dans le CRS de la couche. Aucune écriture n’est effectuée.")
+                patchErrorDialog.open(); return
+            }
+        }
         var preferred = ["id_unique_inv", "uuid", "guid"]
         var out = []
         for (var i = 0; i < preferred.length; ++i) {
@@ -363,7 +376,7 @@ Item {
         try { item = JSON.parse(rawJson) } catch (e) { patchMessage = qsTr("Delta illisible."); return }
         var c = changeContent(item)
         if (String(c.method || "").toLowerCase() !== "patch") {
-            patchMessage = qsTr("La v0.3.3 applique uniquement les opérations PATCH.")
+            patchMessage = qsTr("La v0.3.4 applique uniquement les opérations PATCH.")
             patchErrorDialog.open(); return
         }
         var layer = findLayerForDelta(item)
@@ -394,14 +407,14 @@ Item {
                             "currentValue": current, "blocked": blocked })
             }
         }
-        if (rows.length === 0) {
-            patchMessage = qsTr("Ce PATCH ne contient aucun attribut modifié exploitable.")
+        if (rows.length === 0 && !geometryChanged) {
+            patchMessage = qsTr("Ce PATCH ne contient aucun attribut ni aucune géométrie modifiée exploitable.")
             patchErrorDialog.open(); return
         }
         var writableCount = 0
         for (var w = 0; w < rows.length; ++w)
             if (!rows[w].blocked) writableCount++
-        if (writableCount === 0) {
+        if (writableCount === 0 && !geometryChanged) {
             patchMessage = qsTr("Tous les champs modifiés sont protégés ou absents de l’entité locale.")
             patchErrorDialog.open(); return
         }
@@ -409,6 +422,8 @@ Item {
         patchTargetLayer = layer
         patchTargetFeature = located.feature
         patchRows = rows
+        patchNewGeometry = preparedGeometry
+        patchOriginalGeometry = currentFeatureGeometry(layer, located.feature)
         var matchedIdentifier = resolution.identifiers && resolution.identifiers.length > 0
                 ? resolution.identifiers[0].field + " = " + readable(resolution.identifiers[0].value)
                 : qsTr("fid historique = %1").arg(readable(c.sourcePk || c.localPk))
@@ -418,6 +433,12 @@ Item {
                      qsTr("Entité : %1").arg(entityId(item)), ""]
         lines.push(qsTr("Correspondance : %1").arg(patchMatchExplanation))
         lines.push("")
+        if (geometryChanged) {
+            lines.push(qsTr("📍 Géométrie"))
+            lines.push("  " + qsTr("position actuelle : géométrie de l’entité locale"))
+            lines.push("  " + qsTr("position demandée : ") + newGeometryWkt)
+            lines.push("")
+        }
         for (var r = 0; r < rows.length; ++r) {
             var x = rows[r]
             lines.push((x.blocked ? "🔒 " : "") + x.field)
@@ -447,14 +468,39 @@ Item {
                 patchErrorDialog.open(); return false
             }
         }
-        if (!patchSaveModel.updateAttributesFromFeature(edited) || !patchSaveModel.save(true)) {
+        if (!patchSaveModel.updateAttributesFromFeature(edited)) {
+            patchMessage = qsTr("QField n’a pas pu préparer les attributs de la modification locale.")
+            patchErrorDialog.open(); return false
+        }
+        if (useOldValues && patchOriginalGeometry) {
+            try {
+                if (!patchSaveModel.changeGeometry(patchOriginalGeometry))
+                    throw qsTr("changeGeometry a refusé la géométrie")
+            }
+            catch (restoreGeometryError) {
+                patchMessage = qsTr("QField n’a pas pu restaurer la géométrie antérieure.")
+                patchErrorDialog.open(); return false
+            }
+        } else if (!useOldValues && patchNewGeometry) {
+            try {
+                if (!patchSaveModel.changeGeometry(patchNewGeometry))
+                    throw qsTr("changeGeometry a refusé la géométrie")
+            }
+            catch (writeGeometryError) {
+                patchMessage = qsTr("QField n’a pas pu affecter la nouvelle géométrie à l’entité.")
+                patchErrorDialog.open(); return false
+            }
+        }
+        if (!patchSaveModel.save(true)) {
             patchMessage = qsTr("QField n’a pas pu enregistrer la modification locale.")
             patchErrorDialog.open(); return false
         }
         patchTargetFeature = edited
         if (operation === "apply") {
             lastAppliedPatch = { "delta": selectedDelta, "layer": patchTargetLayer,
-                                 "feature": edited, "rows": patchRows }
+                                 "feature": edited, "rows": patchRows,
+                                 "newGeometry": patchNewGeometry,
+                                 "originalGeometry": patchOriginalGeometry }
             patchMessage = qsTr("Modification appliquée localement. Synchronisez QField pour créer un nouveau delta.")
         } else {
             lastAppliedPatch = null
@@ -476,6 +522,8 @@ Item {
             patchErrorDialog.open(); return
         }
         patchTargetFeature = fresh.feature
+        patchNewGeometry = lastAppliedPatch.newGeometry || null
+        patchOriginalGeometry = lastAppliedPatch.originalGeometry || null
         restoreConfirmDialog.open()
     }
 
@@ -503,6 +551,38 @@ Item {
 
     function qgisStringLiteral(value) {
         return "'" + String(value || "").replace(/'/g, "''") + "'"
+    }
+
+    function layerGeometryForWkt(wkt, layer, sourceCrsHint) {
+        if (!wkt || !layer) return null
+        try {
+            var layerCrs = typeof layer.crs === "function" ? layer.crs() : layer.crs
+            var layerAuth = String(typeof layerCrs.authid === "function" ? layerCrs.authid() : layerCrs.authid || "")
+            var sourceAuth = String(sourceCrsHint || "").trim()
+            if (!sourceAuth) sourceAuth = layerAuth
+            var expression = "geom_from_wkt(" + qgisStringLiteral(wkt) + ")"
+            if (sourceAuth && layerAuth && sourceAuth !== layerAuth)
+                expression = "transform(" + expression + ", " + qgisStringLiteral(sourceAuth) + ", " + qgisStringLiteral(layerAuth) + ")"
+            geometryEvaluator.layer = layer
+            geometryEvaluator.expressionText = expression
+            return geometryEvaluator.evaluate()
+        } catch (e) {
+            console.log("QFieldCloud Change Inspector geometry write: " + e)
+            return null
+        }
+    }
+
+    function currentFeatureGeometry(layer, feature) {
+        if (!layer || !feature) return null
+        try {
+            geometryEvaluator.layer = layer
+            geometryEvaluator.feature = feature
+            geometryEvaluator.expressionText = "$geometry"
+            return geometryEvaluator.evaluate()
+        } catch (e) {
+            console.log("QFieldCloud Change Inspector current geometry: " + e)
+            return null
+        }
     }
 
     function mapPointForWkt(wkt, layer, sourceCrsHint) {
@@ -535,7 +615,7 @@ Item {
             return { "x": mapX, "y": mapY, "sourceCrs": sourceAuth, "mapCrs": destinationAuth }
         } catch (e) {
             patchMessage = qsTr("Conversion cartographique impossible : %1").arg(String(e))
-            console.log("QFieldCloud Change Inspector v0.3.3 geometry preview: " + e)
+            console.log("QFieldCloud Change Inspector v0.3.4 geometry preview: " + e)
             return null
         }
     }
@@ -920,7 +1000,7 @@ Item {
 
     Component.onCompleted: {
         iface.addItemToPluginsToolbar(pluginButton)
-        console.log("QFieldCloud Change Inspector v0.3.3 chargé")
+        console.log("QFieldCloud Change Inspector v0.3.4 chargé")
     }
 
     ListModel { id: changeModel }
@@ -936,6 +1016,13 @@ Item {
 
     ExpressionEvaluator {
         id: coordinateEvaluator
+        project: qgisProject
+        mapSettings: iface.mapCanvas().mapSettings
+        mode: ExpressionEvaluator.ExpressionMode
+    }
+
+    ExpressionEvaluator {
+        id: geometryEvaluator
         project: qgisProject
         mapSettings: iface.mapCanvas().mapSettings
         mode: ExpressionEvaluator.ExpressionMode

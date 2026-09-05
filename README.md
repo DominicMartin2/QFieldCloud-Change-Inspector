@@ -1,4 +1,4 @@
-# QFieldCloud Change Inspector — 0.3.3
+# QFieldCloud Change Inspector — 0.3.4
 
 Plugin QField pour consulter les deltas du projet courant et réappliquer localement un PATCH en erreur après validation explicite.
 
@@ -28,7 +28,7 @@ Les pages de 200 deltas sont récupérées successivement, jusqu'à 50 000 chang
 
 Le bouton **Valider…** est proposé pour les opérations `PATCH` en erreur, en conflit ou non appliquées. Avant toute écriture, le plugin affiche les valeurs ancienne, demandée et actuelle. Il refuse l'opération si la couche ou l'entité n'est pas retrouvée de façon unique et protège les identifiants.
 
-Après application, **Restaurer la dernière application** remet les valeurs `old` dans la même session. La restauration est bloquée si l'une des valeurs a été modifiée entre-temps. Synchroniser seulement après avoir vérifié le résultat sur la base de test.
+Après application, **Restaurer la dernière application** remet les valeurs `old` et la géométrie locale antérieure dans la même session. La restauration des attributs est bloquée si l'une des valeurs a été modifiée entre-temps. Synchroniser seulement après avoir vérifié le résultat sur la base de test.
 
 ## Correspondance avec la base actuelle
 
@@ -45,3 +45,5 @@ Lorsque `old.geometry` et `new.geometry` diffèrent, **Voir déplacement** ferme
 Le plugin lit directement les coordonnées WKT `Point (…)` et les transforme du CRS de la couche vers le CRS de la carte au moyen du moteur d'expressions déjà intégré à QField. Il ne requiert aucun module QML supplémentaire. Les géométries linéaires et polygonales ne sont pas encore prises en charge par l'aperçu.
 
 La version 0.3.3 prend également en charge les `PATCH` dont `old.geometry` est absent. Le marqueur rouge correspond alors à la géométrie actuelle du bâtiment local, tandis que le marqueur vert représente `new.geometry`. Le nouveau point est interprété à partir de `localLayerCrs` ou `sourceLayerCrs` indiqué dans le delta.
+
+La version 0.3.4 applique aussi réellement `new.geometry` à l'entité locale lors de la validation. Le WKT du delta est transformé vers le CRS de la couche avant l'enregistrement. Un PATCH ne contenant qu'un déplacement, sans attribut modifié, peut donc également être validé. La géométrie locale présente avant l'application est conservée pour permettre **Restaurer la dernière application** durant la session.

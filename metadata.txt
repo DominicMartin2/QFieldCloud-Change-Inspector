@@ -1,7 +1,7 @@
 [general]
 name=QFieldCloud Change Inspector
-version=0.3.3
-description=Aperçu des PATCH géométriques avec position actuelle et CRS du delta.
+version=0.3.4
+description=Validation des attributs et de la géométrie des PATCH avec restauration locale.
 author=Dominic Martin
 qfield_version=4.0
 icon=icon.svg
