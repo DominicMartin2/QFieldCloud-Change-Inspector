@@ -1,4 +1,4 @@
-# QFieldCloud Change Inspector — 0.3.5
+# QFieldCloud Change Inspector — 0.3.6
 
 Plugin QField pour consulter les deltas du projet courant et réappliquer localement un PATCH en erreur après validation explicite.
 
@@ -49,3 +49,5 @@ La version 0.3.3 prend également en charge les `PATCH` dont `old.geometry` est 
 La version 0.3.4 applique aussi réellement `new.geometry` à l'entité locale lors de la validation. Le WKT du delta est transformé vers le CRS de la couche avant l'enregistrement. Un PATCH ne contenant qu'un déplacement, sans attribut modifié, peut donc également être validé. La géométrie locale présente avant l'application est conservée pour permettre **Restaurer la dernière application** durant la session.
 
 La version 0.3.5 prépare la géométrie seulement après avoir localisé sans ambiguïté la couche et l'entité. Pour un point, elle évalue séparément les coordonnées X et Y dans le CRS de la couche, puis reconstruit un `make_point(X,Y)` natif avant d'appeler `FeatureModel.changeGeometry()`.
+
+La version 0.3.6 utilise directement `GeometryUtils.createGeometryFromWkt()` et `GeometryUtils.reprojectGeometry()`, les fonctions géométriques natives exposées par QField. Elle évite ainsi la conversion d'un résultat d'expression QGIS vers QML. L'aperçu cadre automatiquement la carte sur les deux positions avec une marge de 20 %.

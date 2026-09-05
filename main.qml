@@ -365,7 +365,7 @@ Item {
         try { item = JSON.parse(rawJson) } catch (e) { patchMessage = qsTr("Delta illisible."); return }
         var c = changeContent(item)
         if (String(c.method || "").toLowerCase() !== "patch") {
-            patchMessage = qsTr("La v0.3.5 applique uniquement les opérations PATCH.")
+            patchMessage = qsTr("La v0.3.6 applique uniquement les opérations PATCH.")
             patchErrorDialog.open(); return
         }
         var layer = findLayerForDelta(item)
@@ -561,31 +561,33 @@ Item {
             var layerAuth = String(typeof layerCrs.authid === "function" ? layerCrs.authid() : layerCrs.authid || "")
             var sourceAuth = String(sourceCrsHint || "").trim()
             if (!sourceAuth) sourceAuth = layerAuth
-            var expression = "geom_from_wkt(" + qgisStringLiteral(wkt) + ")"
-            if (sourceAuth && layerAuth && sourceAuth !== layerAuth)
-                expression = "transform(" + expression + ", " + qgisStringLiteral(sourceAuth) + ", " + qgisStringLiteral(layerAuth) + ")"
-            var point = pointCoordinatesFromWkt(wkt)
-            if (point) {
-                coordinateEvaluator.layer = layer
-                coordinateEvaluator.feature = feature
-                coordinateEvaluator.expressionText = "x(" + expression + ")"
-                var rawTransformedX = coordinateEvaluator.evaluate()
-                coordinateEvaluator.expressionText = "y(" + expression + ")"
-                var rawTransformedY = coordinateEvaluator.evaluate()
-                if (rawTransformedX === null || rawTransformedX === undefined || String(rawTransformedX) === "" ||
-                        rawTransformedY === null || rawTransformedY === undefined || String(rawTransformedY) === "") return null
-                var transformedX = Number(rawTransformedX)
-                var transformedY = Number(rawTransformedY)
-                if (!isFinite(transformedX) || !isFinite(transformedY)) return null
-                expression = "make_point(" + transformedX.toString() + ", " + transformedY.toString() + ")"
+            var geometry = GeometryUtils.createGeometryFromWkt(String(wkt))
+            if (!geometry) return null
+            if (sourceAuth && layerAuth && sourceAuth !== layerAuth) {
+                var sourceCrs = CoordinateReferenceSystemUtils.fromDescription(sourceAuth)
+                geometry = GeometryUtils.reprojectGeometry(geometry, sourceCrs, layerCrs)
             }
-            geometryEvaluator.layer = layer
-            geometryEvaluator.feature = feature
-            geometryEvaluator.expressionText = expression
-            return geometryEvaluator.evaluate()
+            return geometry
         } catch (e) {
             console.log("QFieldCloud Change Inspector geometry write: " + e)
             return null
+        }
+    }
+
+    function zoomToMovement(oldPoint, newPoint) {
+        if (!oldPoint || !newPoint) return
+        try {
+            var minX = Math.min(Number(oldPoint.x), Number(newPoint.x))
+            var maxX = Math.max(Number(oldPoint.x), Number(newPoint.x))
+            var minY = Math.min(Number(oldPoint.y), Number(newPoint.y))
+            var maxY = Math.max(Number(oldPoint.y), Number(newPoint.y))
+            var span = Math.max(maxX - minX, maxY - minY)
+            var padding = Math.max(span * 0.20, 5)
+            var lowerLeft = GeometryUtils.point(minX - padding, minY - padding)
+            var upperRight = GeometryUtils.point(maxX + padding, maxY + padding)
+            iface.mapCanvas().mapSettings.extent = GeometryUtils.createRectangleFromPoints(lowerLeft, upperRight)
+        } catch (zoomError) {
+            console.log("QFieldCloud Change Inspector movement zoom: " + zoomError)
         }
     }
 
@@ -632,7 +634,7 @@ Item {
             return { "x": mapX, "y": mapY, "sourceCrs": sourceAuth, "mapCrs": destinationAuth }
         } catch (e) {
             patchMessage = qsTr("Conversion cartographique impossible : %1").arg(String(e))
-            console.log("QFieldCloud Change Inspector v0.3.5 geometry preview: " + e)
+            console.log("QFieldCloud Change Inspector v0.3.6 geometry preview: " + e)
             return null
         }
     }
@@ -699,10 +701,7 @@ Item {
         movementVisible = true
         inspectorDialog.close()
         historyDialog.close()
-        try {
-            if (located.feature)
-                iface.mapCanvas().mapSettings.extent = FeatureUtils.extent(iface.mapCanvas().mapSettings, layer, located.feature)
-        } catch (zoomError) {}
+        zoomToMovement(oldPoint, newPoint)
         Qt.callLater(updateMovementScreen)
     }
 
@@ -1017,7 +1016,7 @@ Item {
 
     Component.onCompleted: {
         iface.addItemToPluginsToolbar(pluginButton)
-        console.log("QFieldCloud Change Inspector v0.3.5 chargé")
+        console.log("QFieldCloud Change Inspector v0.3.6 chargé")
     }
 
     ListModel { id: changeModel }
