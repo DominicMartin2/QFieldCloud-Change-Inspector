@@ -1,7 +1,7 @@
 [general]
 name=QFieldCloud Change Inspector
-version=0.2.0
-description=Inspection des deltas, validation contrôlée des PATCH et restauration locale protégée.
+version=0.2.1
+description=Validation des PATCH avec correspondance historique par identifiant durable et restauration protégée.
 author=Dominic Martin
 qfield_version=4.0
 icon=icon.svg

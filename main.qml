@@ -34,6 +34,7 @@ Item {
     property var patchRows: []
     property var lastAppliedPatch: null
     property string patchMessage: ""
+    property string patchMatchExplanation: ""
 
     function normalizedServerUrl(value) {
         var url = String(value || "").trim()
@@ -246,8 +247,64 @@ Item {
         return out
     }
 
-    function locateFeature(item, layer) {
-        var ids = candidateIdentifiers(item)
+    function nonEmptyIdentity(value) {
+        return value !== undefined && value !== null && String(value).length > 0
+    }
+
+    function sameLayerContent(a, b) {
+        var an = String(a.localLayerName || a.sourceLayerName || a.localLayerId || "")
+        var bn = String(b.localLayerName || b.sourceLayerName || b.localLayerId || "")
+        return an.length > 0 && an === bn
+    }
+
+    function sameHistoricalEntity(targetContent, otherContent) {
+        if (!sameLayerContent(targetContent, otherContent)) return false
+        if (nonEmptyIdentity(targetContent.sourcePk) && nonEmptyIdentity(otherContent.sourcePk) &&
+                sameValue(targetContent.sourcePk, otherContent.sourcePk)) return true
+        if (nonEmptyIdentity(targetContent.localPk) && nonEmptyIdentity(otherContent.localPk) &&
+                sameValue(targetContent.localPk, otherContent.localPk)) return true
+        return false
+    }
+
+    function resolveIdentifiers(item) {
+        var direct = candidateIdentifiers(item)
+        if (direct.length > 0)
+            return { "identifiers": direct, "source": qsTr("identifiant durable présent dans ce delta"),
+                     "relatedCount": 0, "ambiguous": false }
+
+        var target = changeContent(item)
+        var unique = ({})
+        var inferred = []
+        var related = 0
+        for (var i = 0; i < allChanges.length; ++i) {
+            var other = allChanges[i]
+            if (String(other.id || "") === String(item.id || "")) continue
+            var oc = changeContent(other)
+            if (!sameHistoricalEntity(target, oc)) continue
+            related++
+            var ids = candidateIdentifiers(other)
+            for (var j = 0; j < ids.length; ++j) {
+                var token = ids[j].field + "\u0000" + String(ids[j].value)
+                if (!unique[token]) {
+                    unique[token] = true
+                    inferred.push(ids[j])
+                }
+            }
+        }
+        return {
+            "identifiers": inferred.length === 1 ? inferred : [],
+            "source": inferred.length === 1
+                    ? qsTr("identifiant retrouvé dans %1 delta(s) lié(s)").arg(related)
+                    : "",
+            "relatedCount": related,
+            "ambiguous": inferred.length > 1,
+            "candidateCount": inferred.length
+        }
+    }
+
+    function locateFeature(item, layer, resolution) {
+        var resolved = resolution || resolveIdentifiers(item)
+        var ids = resolved.identifiers || []
         var matches = []
         var matchKey = ""
         try {
@@ -271,7 +328,11 @@ Item {
                 if (matched) matches.push(f)
             }
         } catch (e2) { patchMessage = qsTr("Recherche de l’entité impossible : %1").arg(String(e2)) }
-        return matches.length === 1 ? { "feature": matches[0], "key": matchKey } : null
+        return matches.length === 1
+                ? { "feature": matches[0], "key": matchKey, "matchCount": 1,
+                    "resolution": resolved }
+                : { "feature": null, "key": matchKey, "matchCount": matches.length,
+                    "resolution": resolved }
     }
 
     function preparePatch(rawJson) {
@@ -280,7 +341,7 @@ Item {
         try { item = JSON.parse(rawJson) } catch (e) { patchMessage = qsTr("Delta illisible."); return }
         var c = changeContent(item)
         if (String(c.method || "").toLowerCase() !== "patch") {
-            patchMessage = qsTr("La v0.2.0 applique uniquement les opérations PATCH.")
+            patchMessage = qsTr("La v0.2.1 applique uniquement les opérations PATCH.")
             patchErrorDialog.open(); return
         }
         var layer = findLayerForDelta(item)
@@ -288,9 +349,15 @@ Item {
             patchMessage = qsTr("Couche introuvable ou correspondance ambiguë : %1").arg(layerName(item))
             patchErrorDialog.open(); return
         }
-        var located = locateFeature(item, layer)
-        if (!located) {
-            patchMessage = qsTr("Entité introuvable de façon unique. Aucune écriture n’est autorisée.")
+        var resolution = resolveIdentifiers(item)
+        var located = locateFeature(item, layer, resolution)
+        if (!located.feature) {
+            if (resolution.ambiguous)
+                patchMessage = qsTr("Plusieurs identifiants durables contradictoires ont été retrouvés dans l’historique (%1 candidats). Aucune écriture n’est autorisée.").arg(resolution.candidateCount)
+            else if ((resolution.identifiers || []).length === 0)
+                patchMessage = qsTr("Aucun id_unique_inv n’a été retrouvé dans ce delta ni dans ses %1 delta(s) lié(s). Le fid historique ne correspond pas de façon unique à la base actuelle.").arg(resolution.relatedCount)
+            else
+                patchMessage = qsTr("L’identifiant durable a été retrouvé, mais il correspond à %1 bâtiment(s) dans la base actuelle. Aucune écriture n’est autorisée.").arg(located.matchCount)
             patchErrorDialog.open(); return
         }
         var oldA = c.old && c.old.attributes ? c.old.attributes : ({})
@@ -320,8 +387,15 @@ Item {
         patchTargetLayer = layer
         patchTargetFeature = located.feature
         patchRows = rows
+        var matchedIdentifier = resolution.identifiers && resolution.identifiers.length > 0
+                ? resolution.identifiers[0].field + " = " + readable(resolution.identifiers[0].value)
+                : qsTr("fid historique = %1").arg(readable(c.sourcePk || c.localPk))
+        patchMatchExplanation = matchedIdentifier + " — " +
+                (resolution.source || qsTr("correspondance directe avec le fid local"))
         var lines = [qsTr("Couche : %1").arg(qgisLayerName(layer)),
                      qsTr("Entité : %1").arg(entityId(item)), ""]
+        lines.push(qsTr("Correspondance : %1").arg(patchMatchExplanation))
+        lines.push("")
         for (var r = 0; r < rows.length; ++r) {
             var x = rows[r]
             lines.push((x.blocked ? "🔒 " : "") + x.field)
@@ -375,7 +449,7 @@ Item {
         patchTargetLayer = lastAppliedPatch.layer
         patchRows = lastAppliedPatch.rows
         var fresh = locateFeature(selectedDelta, patchTargetLayer)
-        if (!fresh) {
+        if (!fresh.feature) {
             patchMessage = qsTr("Restauration impossible : l’entité n’est plus retrouvée de façon unique.")
             patchErrorDialog.open(); return
         }
@@ -632,7 +706,7 @@ Item {
 
     Component.onCompleted: {
         iface.addItemToPluginsToolbar(pluginButton)
-        console.log("QFieldCloud Change Inspector v0.2.0 chargé")
+        console.log("QFieldCloud Change Inspector v0.2.1 chargé")
     }
 
     ListModel { id: changeModel }

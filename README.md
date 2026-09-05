@@ -1,4 +1,4 @@
-# QFieldCloud Change Inspector — 0.2.0
+# QFieldCloud Change Inspector — 0.2.1
 
 Plugin QField pour consulter les deltas du projet courant et réappliquer localement un PATCH en erreur après validation explicite.
 
@@ -29,3 +29,7 @@ Les pages de 200 deltas sont récupérées successivement, jusqu'à 50 000 chang
 Le bouton **Valider…** est proposé pour les opérations `PATCH` en erreur, en conflit ou non appliquées. Avant toute écriture, le plugin affiche les valeurs ancienne, demandée et actuelle. Il refuse l'opération si la couche ou l'entité n'est pas retrouvée de façon unique et protège les identifiants.
 
 Après application, **Restaurer la dernière application** remet les valeurs `old` dans la même session. La restauration est bloquée si l'une des valeurs a été modifiée entre-temps. Synchroniser seulement après avoir vérifié le résultat sur la base de test.
+
+## Correspondance avec la base actuelle
+
+Lorsqu'un PATCH ne contient pas `id_unique_inv`, le plugin recherche les autres deltas de la même couche portant le même `sourcePk` ou le même `localPk`. S'il y retrouve un seul identifiant durable, il utilise celui-ci pour localiser le bâtiment actuel et affiche la chaîne de correspondance avant validation. Toute ambiguïté, absence d'identifiant ou correspondance multiple bloque l'écriture.
