@@ -1,4 +1,4 @@
-# QFieldCloud Change Inspector — 0.2.1
+# QFieldCloud Change Inspector — 0.3.0
 
 Plugin QField pour consulter les deltas du projet courant et réappliquer localement un PATCH en erreur après validation explicite.
 
@@ -33,3 +33,11 @@ Après application, **Restaurer la dernière application** remet les valeurs `ol
 ## Correspondance avec la base actuelle
 
 Lorsqu'un PATCH ne contient pas `id_unique_inv`, le plugin recherche les autres deltas de la même couche portant le même `sourcePk` ou le même `localPk`. S'il y retrouve un seul identifiant durable, il utilise celui-ci pour localiser le bâtiment actuel et affiche la chaîne de correspondance avant validation. Toute ambiguïté, absence d'identifiant ou correspondance multiple bloque l'écriture.
+
+## Historique d'une entité
+
+Le bouton **Historique** regroupe les deltas du même enregistrement grâce à `id_unique_inv`, puis à `sourcePk` ou `localPk` lorsque nécessaire. Ils sont affichés du plus ancien au plus récent avec la date, l'utilisateur, le statut et les valeurs modifiées. Un delta en erreur est présenté comme une tentative et non comme une modification nécessairement présente dans la base.
+
+## Aperçu des déplacements
+
+Lorsque `old.geometry` et `new.geometry` diffèrent, **Voir déplacement** ferme temporairement l'inspecteur et affiche sur la carte l'ancien point en rouge, le nouveau en vert et une ligne entre les deux. Cet aperçu n'enregistre aucune géométrie. Le filtre d'enregistrement est retiré uniquement durant la recherche interne, puis restauré immédiatement.

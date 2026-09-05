@@ -35,6 +35,12 @@ Item {
     property var lastAppliedPatch: null
     property string patchMessage: ""
     property string patchMatchExplanation: ""
+    property var movementOldPoint: null
+    property var movementNewPoint: null
+    property point movementOldScreen: Qt.point(0, 0)
+    property point movementNewScreen: Qt.point(0, 0)
+    property string movementInfo: ""
+    property bool movementVisible: false
 
     function normalizedServerUrl(value) {
         var url = String(value || "").trim()
@@ -307,7 +313,17 @@ Item {
         var ids = resolved.identifiers || []
         var matches = []
         var matchKey = ""
+        var originalSubset = ""
+        var subsetChanged = false
         try {
+            try {
+                originalSubset = String(typeof layer.subsetString === "function"
+                                        ? layer.subsetString() : layer.subsetString || "")
+                if (originalSubset && typeof layer.setSubsetString === "function") {
+                    layer.setSubsetString("")
+                    subsetChanged = true
+                }
+            } catch (subsetReadError) {}
             var iterator = LayerUtils.createFeatureIterator(layer)
             while (iterator && iterator.hasNext()) {
                 var f = iterator.next()
@@ -328,6 +344,12 @@ Item {
                 if (matched) matches.push(f)
             }
         } catch (e2) { patchMessage = qsTr("Recherche de l’entité impossible : %1").arg(String(e2)) }
+        finally {
+            if (subsetChanged) {
+                try { layer.setSubsetString(originalSubset); layer.triggerRepaint() }
+                catch (subsetRestoreError) {}
+            }
+        }
         return matches.length === 1
                 ? { "feature": matches[0], "key": matchKey, "matchCount": 1,
                     "resolution": resolved }
@@ -341,7 +363,7 @@ Item {
         try { item = JSON.parse(rawJson) } catch (e) { patchMessage = qsTr("Delta illisible."); return }
         var c = changeContent(item)
         if (String(c.method || "").toLowerCase() !== "patch") {
-            patchMessage = qsTr("La v0.2.1 applique uniquement les opérations PATCH.")
+            patchMessage = qsTr("La v0.3.0 applique uniquement les opérations PATCH.")
             patchErrorDialog.open(); return
         }
         var layer = findLayerForDelta(item)
@@ -455,6 +477,156 @@ Item {
         }
         patchTargetFeature = fresh.feature
         restoreConfirmDialog.open()
+    }
+
+    function geometryText(item, side) {
+        var c = changeContent(item)
+        var part = side === "new" ? c.new : c.old
+        return part && part.geometry ? String(part.geometry) : ""
+    }
+
+    function hasGeometryChange(item) {
+        var oldWkt = geometryText(item, "old")
+        var newWkt = geometryText(item, "new")
+        return newWkt.length > 0 && newWkt !== oldWkt
+    }
+
+    function qgisStringLiteral(value) {
+        return "'" + String(value || "").replace(/'/g, "''") + "'"
+    }
+
+    function mapPointForWkt(wkt, layer, feature) {
+        if (!wkt || !layer || !feature) return null
+        try {
+            geometryEvaluator.layer = layer
+            geometryEvaluator.feature = feature
+            geometryEvaluator.expressionText = "geom_from_wkt(" + qgisStringLiteral(wkt) + ")"
+            var geometry = geometryEvaluator.evaluate()
+            if (!geometry) return null
+            patchSaveModel.currentLayer = layer
+            patchSaveModel.feature = feature
+            var temporaryFeature = patchSaveModel.feature
+            temporaryFeature.setGeometry(geometry)
+            var canvas = iface.mapCanvas()
+            return FeatureUtils.extent(canvas.mapSettings, layer, temporaryFeature).center
+        } catch (e) {
+            console.log("QFieldCloud Change Inspector geometry preview: " + e)
+            return null
+        }
+    }
+
+    function updateMovementScreen() {
+        if (!movementVisible) return
+        try {
+            var settings = iface.mapCanvas().mapSettings
+            movementOldScreen = settings.coordinateToScreen(movementOldPoint)
+            movementNewScreen = settings.coordinateToScreen(movementNewPoint)
+            movementLine.requestPaint()
+        } catch (e) {}
+    }
+
+    function closeMovementPreview() {
+        movementVisible = false
+        movementOldPoint = null
+        movementNewPoint = null
+    }
+
+    function openMovementPreview(rawJson) {
+        var item
+        try { item = JSON.parse(rawJson) } catch (e) { return }
+        if (!hasGeometryChange(item)) {
+            patchMessage = qsTr("Ce delta ne contient pas deux emplacements différents.")
+            patchErrorDialog.open(); return
+        }
+        var layer = findLayerForDelta(item)
+        if (!layer) {
+            patchMessage = qsTr("La couche du déplacement est introuvable.")
+            patchErrorDialog.open(); return
+        }
+        var located = locateFeature(item, layer)
+        if (!located.feature) {
+            patchMessage = qsTr("Le bâtiment servant à transformer les coordonnées est introuvable.")
+            patchErrorDialog.open(); return
+        }
+        var oldPoint = mapPointForWkt(geometryText(item, "old"), layer, located.feature)
+        var newPoint = mapPointForWkt(geometryText(item, "new"), layer, located.feature)
+        if (!oldPoint || !newPoint) {
+            patchMessage = qsTr("QField n’a pas pu convertir les géométries du delta vers la carte.")
+            patchErrorDialog.open(); return
+        }
+        movementOldPoint = oldPoint
+        movementNewPoint = newPoint
+        var dx = Number(newPoint.x) - Number(oldPoint.x)
+        var dy = Number(newPoint.y) - Number(oldPoint.y)
+        movementInfo = qsTr("Distance cartographique : %1 unité(s)").arg(Math.sqrt(dx * dx + dy * dy).toFixed(2))
+        movementVisible = true
+        inspectorDialog.close()
+        historyDialog.close()
+        try { iface.mapCanvas().mapSettings.setExtentFromPoints([oldPoint, newPoint], 1000, true) }
+        catch (zoomError) {}
+        Qt.callLater(updateMovementScreen)
+    }
+
+    function identifierToken(identifier) {
+        return identifier ? identifier.field + "\u0000" + String(identifier.value) : ""
+    }
+
+    function deltaHasIdentifier(item, token) {
+        var ids = candidateIdentifiers(item)
+        for (var i = 0; i < ids.length; ++i)
+            if (identifierToken(ids[i]) === token) return true
+        return false
+    }
+
+    function historySummary(item) {
+        var c = changeContent(item)
+        var method = String(c.method || "").toUpperCase()
+        if (method === "PATCH") {
+            var oldA = c.old && c.old.attributes ? c.old.attributes : ({})
+            var newA = c.new && c.new.attributes ? c.new.attributes : ({})
+            var parts = []
+            for (var field in newA)
+                if (!(field in oldA) || !sameValue(oldA[field], newA[field]))
+                    parts.push(field + " : " + readable(oldA[field]) + " → " + readable(newA[field]))
+            if (hasGeometryChange(item)) parts.push(qsTr("géométrie déplacée"))
+            return parts.length ? parts.join("\n") : qsTr("PATCH sans différence lisible")
+        }
+        if (method === "CREATE") return qsTr("Création de l’enregistrement")
+        if (method === "DELETE") return qsTr("Suppression de l’enregistrement")
+        return method
+    }
+
+    function openEntityHistory(rawJson) {
+        var target
+        try { target = JSON.parse(rawJson) } catch (e) { return }
+        var tc = changeContent(target)
+        var resolution = resolveIdentifiers(target)
+        var token = resolution.identifiers && resolution.identifiers.length === 1
+                ? identifierToken(resolution.identifiers[0]) : ""
+        var rows = []
+        for (var i = 0; i < allChanges.length; ++i) {
+            var other = allChanges[i]
+            var related = token ? deltaHasIdentifier(other, token) : false
+            if (!related) related = sameHistoricalEntity(tc, changeContent(other))
+            if (related) rows.push(other)
+        }
+        rows.sort(function(a, b) { return String(a.created_at || "").localeCompare(String(b.created_at || "")) })
+        historyModel.clear()
+        for (var r = 0; r < rows.length; ++r) {
+            var x = rows[r]
+            var xs = changeStatus(x)
+            historyModel.append({
+                "dateText": String(x.created_at || ""), "userText": createdBy(x),
+                "statusText": statusLabel(xs), "statusTint": statusColor(xs),
+                "methodText": methodName(x), "summaryText": historySummary(x),
+                "rawJson": JSON.stringify(x, null, 2),
+                "canValidate": methodName(x) === "PATCH" && (xs === "STATUS_ERROR" || xs === "STATUS_CONFLICT" || xs === "STATUS_NOT_APPLIED"),
+                "hasMovement": hasGeometryChange(x)
+            })
+        }
+        historyTitle.text = qsTr("Historique — %1").arg(token ? token.split("\u0000")[1] : entityId(target))
+        historyMessage.text = qsTr("%1 delta(s), du plus ancien au plus récent. Une erreur représente une tentative, pas nécessairement une modification présente dans la base.").arg(rows.length)
+        historyDialog.open()
     }
 
     function extractResults(payload) {
@@ -706,17 +878,25 @@ Item {
 
     Component.onCompleted: {
         iface.addItemToPluginsToolbar(pluginButton)
-        console.log("QFieldCloud Change Inspector v0.2.1 chargé")
+        console.log("QFieldCloud Change Inspector v0.3.0 chargé")
     }
 
     ListModel { id: changeModel }
     ListModel { id: projectModel }
+    ListModel { id: historyModel }
 
     FeatureModel {
         id: patchSaveModel
         project: qgisProject
         currentLayer: plugin.patchTargetLayer
         modelMode: FeatureModel.SingleFeatureModel
+    }
+
+    ExpressionEvaluator {
+        id: geometryEvaluator
+        project: qgisProject
+        mapSettings: iface.mapCanvas().mapSettings
+        mode: ExpressionEvaluator.ExpressionMode
     }
 
     QfToolButton {
@@ -842,6 +1022,12 @@ Item {
                                 visible: methodText === "PATCH" && (statusCode === "STATUS_ERROR" || statusCode === "STATUS_CONFLICT" || statusCode === "STATUS_NOT_APPLIED")
                                 onClicked: plugin.preparePatch(rawJson)
                             }
+                            Button { text: qsTr("Historique"); onClicked: plugin.openEntityHistory(rawJson) }
+                            Button {
+                                text: qsTr("Voir déplacement")
+                                visible: plugin.hasGeometryChange(JSON.parse(rawJson))
+                                onClicked: plugin.openMovementPreview(rawJson)
+                            }
                         }
                         Label {
                             Layout.fillWidth: true
@@ -926,6 +1112,54 @@ Item {
                 Item { Layout.fillWidth: true }
                 Button { text: qsTr("Annuler"); onClicked: configDialog.close() }
                 Button { text: qsTr("Enregistrer et actualiser"); font.bold: true; onClicked: plugin.saveConfiguration() }
+            }
+        }
+    }
+
+    Dialog {
+        id: historyDialog
+        parent: mainWindow.contentItem
+        modal: true
+        title: historyTitle.text
+        standardButtons: Dialog.Close
+        width: Math.min(parent.width * 0.94, 1200)
+        height: Math.min(parent.height * 0.9, 820)
+        x: (parent.width - width) / 2
+        y: (parent.height - height) / 2
+        contentItem: ColumnLayout {
+            Label { id: historyTitle; visible: false }
+            Label { id: historyMessage; Layout.fillWidth: true; wrapMode: Text.WordWrap }
+            ListView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                spacing: 6
+                model: historyModel
+                delegate: Rectangle {
+                    width: ListView.view.width
+                    height: historyRow.implicitHeight + 16
+                    radius: 5
+                    color: index % 2 ? "#ffffff" : "#f5f5f5"
+                    border.color: statusTint
+                    border.width: 2
+                    ColumnLayout {
+                        id: historyRow
+                        anchors.fill: parent
+                        anchors.margins: 8
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Label { text: dateText; font.bold: true }
+                            Label { text: userText || "—" }
+                            Label { text: methodText; font.bold: true }
+                            Label { text: statusText; color: statusTint; font.bold: true }
+                            Item { Layout.fillWidth: true }
+                            Button { text: qsTr("Détails"); onClicked: { detailTitle.text = statusText; detailText.text = rawJson; detailDialog.open() } }
+                            Button { text: qsTr("Voir déplacement"); visible: hasMovement; onClicked: plugin.openMovementPreview(rawJson) }
+                            Button { text: qsTr("Valider…"); visible: canValidate; onClicked: plugin.preparePatch(rawJson) }
+                        }
+                        Label { Layout.fillWidth: true; text: summaryText; wrapMode: Text.WordWrap }
+                    }
+                }
             }
         }
     }
@@ -1034,4 +1268,64 @@ Item {
         onTriggered: plugin.rebuildDisplay()
     }
     Timer { id: dateTimer; interval: 250; repeat: false; onTriggered: plugin.rebuildDisplay() }
+    Timer { id: movementTimer; interval: 100; repeat: true; running: plugin.movementVisible; onTriggered: plugin.updateMovementScreen() }
+
+    Item {
+        id: movementOverlay
+        parent: iface.mapCanvas()
+        anchors.fill: parent
+        z: 999999
+        visible: plugin.movementVisible
+        Canvas {
+            id: movementLine
+            anchors.fill: parent
+            onPaint: {
+                var ctx = getContext("2d")
+                ctx.clearRect(0, 0, width, height)
+                ctx.strokeStyle = "#ffb300"
+                ctx.lineWidth = 5
+                ctx.beginPath()
+                ctx.moveTo(plugin.movementOldScreen.x, plugin.movementOldScreen.y)
+                ctx.lineTo(plugin.movementNewScreen.x, plugin.movementNewScreen.y)
+                ctx.stroke()
+            }
+        }
+        Rectangle {
+            width: 30; height: 30; radius: 15
+            color: "#d32f2f"; border.color: "white"; border.width: 4
+            x: plugin.movementOldScreen.x - width / 2
+            y: plugin.movementOldScreen.y - height / 2
+            Label { anchors.centerIn: parent; text: "A"; color: "white"; font.bold: true }
+        }
+        Rectangle {
+            width: 30; height: 30; radius: 15
+            color: "#2e7d32"; border.color: "white"; border.width: 4
+            x: plugin.movementNewScreen.x - width / 2
+            y: plugin.movementNewScreen.y - height / 2
+            Label { anchors.centerIn: parent; text: "N"; color: "white"; font.bold: true }
+        }
+        Rectangle {
+            anchors.top: parent.top
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.topMargin: 16
+            width: movementPanel.implicitWidth + 24
+            height: movementPanel.implicitHeight + 16
+            radius: 8
+            color: "#eeffffff"
+            border.color: "#666666"
+            RowLayout {
+                id: movementPanel
+                anchors.centerIn: parent
+                Rectangle { width: 14; height: 14; radius: 7; color: "#d32f2f" }
+                Label { text: qsTr("Ancien") }
+                Rectangle { width: 14; height: 14; radius: 7; color: "#2e7d32" }
+                Label { text: qsTr("Nouveau") }
+                Label { text: plugin.movementInfo; font.bold: true }
+                Button {
+                    text: qsTr("Fermer l’aperçu")
+                    onClicked: { plugin.closeMovementPreview(); inspectorDialog.open() }
+                }
+            }
+        }
+    }
 }
