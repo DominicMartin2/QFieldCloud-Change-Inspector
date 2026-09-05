@@ -1,7 +1,7 @@
 [general]
 name=QFieldCloud Change Inspector
-version=0.3.0
-description=Historique des entités, aperçu cartographique des déplacements et validation contrôlée des PATCH.
+version=0.3.1
+description=Historique des entités et aperçu corrigé des déplacements par transformation native des points.
 author=Dominic Martin
 qfield_version=4.0
 icon=icon.svg

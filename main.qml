@@ -4,6 +4,7 @@ import QtQuick.Layouts
 
 import org.qfield
 import org.qgis
+import QgisQuick as QgsQuick
 import Theme
 
 Item {
@@ -363,7 +364,7 @@ Item {
         try { item = JSON.parse(rawJson) } catch (e) { patchMessage = qsTr("Delta illisible."); return }
         var c = changeContent(item)
         if (String(c.method || "").toLowerCase() !== "patch") {
-            patchMessage = qsTr("La v0.3.0 applique uniquement les opérations PATCH.")
+            patchMessage = qsTr("La v0.3.1 applique uniquement les opérations PATCH.")
             patchErrorDialog.open(); return
         }
         var layer = findLayerForDelta(item)
@@ -491,26 +492,33 @@ Item {
         return newWkt.length > 0 && newWkt !== oldWkt
     }
 
-    function qgisStringLiteral(value) {
-        return "'" + String(value || "").replace(/'/g, "''") + "'"
+    function pointCoordinatesFromWkt(wkt) {
+        var match = /^\s*Point\s*(?:ZM|Z|M)?\s*\(\s*([-+0-9.eE]+)\s+([-+0-9.eE]+)/i.exec(String(wkt || ""))
+        if (!match) return null
+        var x = Number(match[1])
+        var y = Number(match[2])
+        return isNaN(x) || isNaN(y) ? null : { "x": x, "y": y }
     }
 
-    function mapPointForWkt(wkt, layer, feature) {
-        if (!wkt || !layer || !feature) return null
+    function mapPointForWkt(wkt, layer) {
+        if (!wkt || !layer) return null
         try {
-            geometryEvaluator.layer = layer
-            geometryEvaluator.feature = feature
-            geometryEvaluator.expressionText = "geom_from_wkt(" + qgisStringLiteral(wkt) + ")"
-            var geometry = geometryEvaluator.evaluate()
-            if (!geometry) return null
-            patchSaveModel.currentLayer = layer
-            patchSaveModel.feature = feature
-            var temporaryFeature = patchSaveModel.feature
-            temporaryFeature.setGeometry(geometry)
             var canvas = iface.mapCanvas()
-            return FeatureUtils.extent(canvas.mapSettings, layer, temporaryFeature).center
+            var coordinates = pointCoordinatesFromWkt(wkt)
+            if (!coordinates || !canvas || !canvas.mapSettings) return null
+            var sourceCrs = typeof layer.crs === "function" ? layer.crs() : layer.crs
+            var destinationCrs = canvas.mapSettings.destinationCrs
+            if (typeof destinationCrs === "function") destinationCrs = destinationCrs()
+            var sourcePoint = QgsQuick.Utils.pointXY(coordinates.x, coordinates.y)
+            var transformed = QgsQuick.Utils.transformPoint(
+                        sourceCrs,
+                        destinationCrs,
+                        canvas.mapSettings.transformContext(),
+                        sourcePoint)
+            return QgsQuick.Utils.point(Number(transformed.x), Number(transformed.y))
         } catch (e) {
-            console.log("QFieldCloud Change Inspector geometry preview: " + e)
+            patchMessage = qsTr("Conversion cartographique impossible : %1").arg(String(e))
+            console.log("QFieldCloud Change Inspector v0.3.1 geometry preview: " + e)
             return null
         }
     }
@@ -532,6 +540,7 @@ Item {
     }
 
     function openMovementPreview(rawJson) {
+        patchMessage = ""
         var item
         try { item = JSON.parse(rawJson) } catch (e) { return }
         if (!hasGeometryChange(item)) {
@@ -543,15 +552,13 @@ Item {
             patchMessage = qsTr("La couche du déplacement est introuvable.")
             patchErrorDialog.open(); return
         }
-        var located = locateFeature(item, layer)
-        if (!located.feature) {
-            patchMessage = qsTr("Le bâtiment servant à transformer les coordonnées est introuvable.")
-            patchErrorDialog.open(); return
-        }
-        var oldPoint = mapPointForWkt(geometryText(item, "old"), layer, located.feature)
-        var newPoint = mapPointForWkt(geometryText(item, "new"), layer, located.feature)
+        var oldWkt = geometryText(item, "old")
+        var newWkt = geometryText(item, "new")
+        var oldPoint = mapPointForWkt(oldWkt, layer)
+        var newPoint = mapPointForWkt(newWkt, layer)
         if (!oldPoint || !newPoint) {
-            patchMessage = qsTr("QField n’a pas pu convertir les géométries du delta vers la carte.")
+            if (!patchMessage)
+                patchMessage = qsTr("Format de point non reconnu. Ancien : %1 — Nouveau : %2").arg(oldWkt).arg(newWkt)
             patchErrorDialog.open(); return
         }
         movementOldPoint = oldPoint
@@ -878,7 +885,7 @@ Item {
 
     Component.onCompleted: {
         iface.addItemToPluginsToolbar(pluginButton)
-        console.log("QFieldCloud Change Inspector v0.3.0 chargé")
+        console.log("QFieldCloud Change Inspector v0.3.1 chargé")
     }
 
     ListModel { id: changeModel }
@@ -890,13 +897,6 @@ Item {
         project: qgisProject
         currentLayer: plugin.patchTargetLayer
         modelMode: FeatureModel.SingleFeatureModel
-    }
-
-    ExpressionEvaluator {
-        id: geometryEvaluator
-        project: qgisProject
-        mapSettings: iface.mapCanvas().mapSettings
-        mode: ExpressionEvaluator.ExpressionMode
     }
 
     QfToolButton {

@@ -1,4 +1,4 @@
-# QFieldCloud Change Inspector — 0.3.0
+# QFieldCloud Change Inspector — 0.3.1
 
 Plugin QField pour consulter les deltas du projet courant et réappliquer localement un PATCH en erreur après validation explicite.
 
@@ -41,3 +41,5 @@ Le bouton **Historique** regroupe les deltas du même enregistrement grâce à `
 ## Aperçu des déplacements
 
 Lorsque `old.geometry` et `new.geometry` diffèrent, **Voir déplacement** ferme temporairement l'inspecteur et affiche sur la carte l'ancien point en rouge, le nouveau en vert et une ligne entre les deux. Cet aperçu n'enregistre aucune géométrie. Le filtre d'enregistrement est retiré uniquement durant la recherche interne, puis restauré immédiatement.
+
+La version 0.3.1 lit directement les coordonnées WKT `Point (…)` et les transforme du CRS de la couche vers le CRS de la carte avec l'utilitaire natif QGIS Quick. Les géométries linéaires et polygonales ne sont pas encore prises en charge par l'aperçu.
