@@ -363,7 +363,7 @@ Item {
         try { item = JSON.parse(rawJson) } catch (e) { patchMessage = qsTr("Delta illisible."); return }
         var c = changeContent(item)
         if (String(c.method || "").toLowerCase() !== "patch") {
-            patchMessage = qsTr("La v0.3.2 applique uniquement les opérations PATCH.")
+            patchMessage = qsTr("La v0.3.3 applique uniquement les opérations PATCH.")
             patchErrorDialog.open(); return
         }
         var layer = findLayerForDelta(item)
@@ -486,6 +486,8 @@ Item {
     }
 
     function hasGeometryChange(item) {
+        var c = changeContent(item)
+        if (String(c.method || "").toLowerCase() !== "patch") return false
         var oldWkt = geometryText(item, "old")
         var newWkt = geometryText(item, "new")
         return newWkt.length > 0 && newWkt !== oldWkt
@@ -503,7 +505,7 @@ Item {
         return "'" + String(value || "").replace(/'/g, "''") + "'"
     }
 
-    function mapPointForWkt(wkt, layer) {
+    function mapPointForWkt(wkt, layer, sourceCrsHint) {
         if (!wkt || !layer) return null
         try {
             var coordinates = pointCoordinatesFromWkt(wkt)
@@ -513,7 +515,9 @@ Item {
             var sourceCrs = typeof layer.crs === "function" ? layer.crs() : layer.crs
             var destinationCrs = canvas.mapSettings.destinationCrs
             if (typeof destinationCrs === "function") destinationCrs = destinationCrs()
-            var sourceAuth = String(typeof sourceCrs.authid === "function" ? sourceCrs.authid() : sourceCrs.authid || "")
+            var sourceAuth = String(sourceCrsHint || "").trim()
+            if (!sourceAuth)
+                sourceAuth = String(typeof sourceCrs.authid === "function" ? sourceCrs.authid() : sourceCrs.authid || "")
             var destinationAuth = String(typeof destinationCrs.authid === "function" ? destinationCrs.authid() : destinationCrs.authid || "")
             var geometryExpression = "geom_from_wkt(" + qgisStringLiteral(wkt) + ")"
             if (sourceAuth && destinationAuth && sourceAuth !== destinationAuth)
@@ -531,7 +535,7 @@ Item {
             return { "x": mapX, "y": mapY, "sourceCrs": sourceAuth, "mapCrs": destinationAuth }
         } catch (e) {
             patchMessage = qsTr("Conversion cartographique impossible : %1").arg(String(e))
-            console.log("QFieldCloud Change Inspector v0.3.2 geometry preview: " + e)
+            console.log("QFieldCloud Change Inspector v0.3.3 geometry preview: " + e)
             return null
         }
     }
@@ -573,23 +577,32 @@ Item {
         }
         var oldWkt = geometryText(item, "old")
         var newWkt = geometryText(item, "new")
-        var oldPoint = mapPointForWkt(oldWkt, layer)
-        var newPoint = mapPointForWkt(newWkt, layer)
+        var content = changeContent(item)
+        var deltaCrs = String(content.localLayerCrs || content.sourceLayerCrs || "")
+        var located = locateFeature(item, layer)
+        var oldPoint = oldWkt ? mapPointForWkt(oldWkt, layer, deltaCrs) : null
+        if (!oldPoint && located.feature) {
+            try {
+                oldPoint = FeatureUtils.extent(iface.mapCanvas().mapSettings, layer, located.feature).center
+            } catch (currentGeometryError) {}
+        }
+        var newPoint = mapPointForWkt(newWkt, layer, deltaCrs)
         if (!oldPoint || !newPoint) {
             if (!patchMessage)
-                patchMessage = qsTr("Format de point non reconnu. Ancien : %1 — Nouveau : %2").arg(oldWkt).arg(newWkt)
+                patchMessage = !oldPoint
+                        ? qsTr("La position actuelle du bâtiment n’a pas pu être retrouvée. Nouveau point : %1 — CRS : %2").arg(newWkt).arg(deltaCrs || "inconnu")
+                        : qsTr("Le nouveau point n’a pas pu être transformé. Point : %1 — CRS : %2").arg(newWkt).arg(deltaCrs || "inconnu")
             patchErrorDialog.open(); return
         }
         movementOldPoint = oldPoint
         movementNewPoint = newPoint
         var dx = Number(newPoint.x) - Number(oldPoint.x)
         var dy = Number(newPoint.y) - Number(oldPoint.y)
-        movementInfo = qsTr("Distance cartographique : %1 unité(s)").arg(Math.sqrt(dx * dx + dy * dy).toFixed(2))
+        movementInfo = qsTr("Position actuelle → position proposée — distance cartographique : %1 unité(s)").arg(Math.sqrt(dx * dx + dy * dy).toFixed(2))
         movementVisible = true
         inspectorDialog.close()
         historyDialog.close()
         try {
-            var located = locateFeature(item, layer)
             if (located.feature)
                 iface.mapCanvas().mapSettings.extent = FeatureUtils.extent(iface.mapCanvas().mapSettings, layer, located.feature)
         } catch (zoomError) {}
@@ -907,7 +920,7 @@ Item {
 
     Component.onCompleted: {
         iface.addItemToPluginsToolbar(pluginButton)
-        console.log("QFieldCloud Change Inspector v0.3.2 chargé")
+        console.log("QFieldCloud Change Inspector v0.3.3 chargé")
     }
 
     ListModel { id: changeModel }
@@ -1346,9 +1359,9 @@ Item {
                 id: movementPanel
                 anchors.centerIn: parent
                 Rectangle { width: 14; height: 14; radius: 7; color: "#d32f2f" }
-                Label { text: qsTr("Ancien") }
+                Label { text: qsTr("Actuel") }
                 Rectangle { width: 14; height: 14; radius: 7; color: "#2e7d32" }
-                Label { text: qsTr("Nouveau") }
+                Label { text: qsTr("Proposé") }
                 Label { text: plugin.movementInfo; font.bold: true }
                 Button {
                     text: qsTr("Fermer l’aperçu")

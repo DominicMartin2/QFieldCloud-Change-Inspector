@@ -1,4 +1,4 @@
-# QFieldCloud Change Inspector — 0.3.2
+# QFieldCloud Change Inspector — 0.3.3
 
 Plugin QField pour consulter les deltas du projet courant et réappliquer localement un PATCH en erreur après validation explicite.
 
@@ -42,4 +42,6 @@ Le bouton **Historique** regroupe les deltas du même enregistrement grâce à `
 
 Lorsque `old.geometry` et `new.geometry` diffèrent, **Voir déplacement** ferme temporairement l'inspecteur et affiche sur la carte l'ancien point en rouge, le nouveau en vert et une ligne entre les deux. Cet aperçu n'enregistre aucune géométrie. Le filtre d'enregistrement est retiré uniquement durant la recherche interne, puis restauré immédiatement.
 
-La version 0.3.2 lit directement les coordonnées WKT `Point (…)` et les transforme du CRS de la couche vers le CRS de la carte au moyen du moteur d'expressions déjà intégré à QField. Elle ne requiert aucun module QML supplémentaire. Les géométries linéaires et polygonales ne sont pas encore prises en charge par l'aperçu.
+Le plugin lit directement les coordonnées WKT `Point (…)` et les transforme du CRS de la couche vers le CRS de la carte au moyen du moteur d'expressions déjà intégré à QField. Il ne requiert aucun module QML supplémentaire. Les géométries linéaires et polygonales ne sont pas encore prises en charge par l'aperçu.
+
+La version 0.3.3 prend également en charge les `PATCH` dont `old.geometry` est absent. Le marqueur rouge correspond alors à la géométrie actuelle du bâtiment local, tandis que le marqueur vert représente `new.geometry`. Le nouveau point est interprété à partir de `localLayerCrs` ou `sourceLayerCrs` indiqué dans le delta.
